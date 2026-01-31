@@ -1,4 +1,5 @@
-const sql = require("mssql");
+
+    const sql = require("mssql");
 
 module.exports = async function (context, req) {
   // 1) CORS / preflight
@@ -20,7 +21,6 @@ module.exports = async function (context, req) {
     return;
   }
 
-  // Helper: zawsze dodaj CORS do odpowiedzi
   const ok = (status, body) => ({
     status,
     body,
@@ -28,7 +28,8 @@ module.exports = async function (context, req) {
   });
 
   try {
-    await sql.connect(connStr);
+    // ✅ Poprawka: bierzemy pool i robimy request przez pool.request()
+    const pool = await sql.connect(connStr);
 
     // 2) GET - pobierz board
     if (req.method === "GET") {
@@ -37,14 +38,12 @@ module.exports = async function (context, req) {
       const month = (req.query.month || "").trim();
 
       if (!user || !year || !month) {
-        context.res = ok(400, {
-          message: "Brak parametrow: user, year, month",
-        });
+        context.res = ok(400, { message: "Brak parametrow: user, year, month" });
         return;
       }
 
-      const result = await sql
-        .request()
+      const result = await pool
+        .request() // ✅ zamiast sql.request() / new sql.Request()
         .input("userName", sql.NVarChar(100), user)
         .input("year", sql.Int, year)
         .input("month", sql.Char(2), month)
@@ -73,17 +72,14 @@ module.exports = async function (context, req) {
       const data = body.data;
 
       if (!user || !year || !month || !data) {
-        context.res = ok(400, {
-          message: "Brak w body: user, year, month, data",
-        });
+        context.res = ok(400, { message: "Brak w body: user, year, month, data" });
         return;
       }
 
       const dataJson = JSON.stringify(data);
 
-      // UPSERT (UPDATE jeśli jest, INSERT jeśli nie ma)
-      await sql
-        .request()
+      await pool
+        .request() // ✅ zamiast sql.request() / new sql.Request()
         .input("userName", sql.NVarChar(100), user)
         .input("year", sql.Int, year)
         .input("month", sql.Char(2), month)
@@ -106,15 +102,11 @@ module.exports = async function (context, req) {
     context.res = ok(405, { message: "Method not allowed" });
   } catch (err) {
     context.log.error("API ERROR:", err);
-    context.res = {
-      status: 500,
-      body: { message: "Błąd", error: err.message },
-      headers: { "Access-Control-Allow-Origin": "*" },
-    };
+    context.res = ok(500, { message: "Błąd", error: err.message });
   } finally {
+    // opcjonalnie zamykamy
     try {
       await sql.close();
     } catch {}
   }
 };
-
