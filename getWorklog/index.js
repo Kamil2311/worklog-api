@@ -109,12 +109,12 @@ module.exports = async function (context, req) {
       const month = String(body.month || "").padStart(2, "0");
       const data = body.data;
  
-      if (!user || !year || !month || !data) {
-        context.res = ok(400, {
-          message: "Brak w body: user, year, month, data",
-        });
-        return;
-      }
+      if (!user || !year || !month || data == null) {
+  context.res = ok(400, {
+    message: "Brak w body: user, year, month, data",
+  });
+  return;
+}
  
       let dataJson;
       try {
