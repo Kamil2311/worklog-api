@@ -1,6 +1,19 @@
 const sql = require("mssql");
  
-let pool; 
+let pool; // ✅ globalny pool (serverless-safe)
+ 
+// ===== helper: retry dla Azure SQL =====
+async function getPool(connStr, retries = 5, delayMs = 1500) {
+  try {
+    return await sql.connect(connStr);
+  } catch (err) {
+    if (retries <= 0) {
+      throw err;
+    }
+    await new Promise(r => setTimeout(r, delayMs));
+    return getPool(connStr, retries - 1, delayMs);
+  }
+}
  
 module.exports = async function (context, req) {
  
@@ -33,10 +46,10 @@ module.exports = async function (context, req) {
  
   try {
     // =========================
-    // SQL pool (reuse)
+    // SQL pool (reuse + retry)
     // =========================
     if (!pool) {
-      pool = await sql.connect(connStr);
+      pool = await getPool(connStr);
     }
  
     // =========================
@@ -67,7 +80,6 @@ module.exports = async function (context, req) {
             AND [month]=@month
         `);
  
-      // brak rekordu = OK, brak danych
       if (!result.recordset.length) {
         context.res = ok(200, null);
         return;
@@ -75,25 +87,18 @@ module.exports = async function (context, req) {
  
       const dataJson = result.recordset[0].dataJson;
  
-      // NULL / pusty
-      if (!dataJson) {
+      if (!dataJson || typeof dataJson !== "string") {
         context.res = ok(200, null);
         return;
       }
  
-      // bezpieczne parsowanie
       try {
         context.res = ok(200, JSON.parse(dataJson));
       } catch (e) {
         context.log.error("Invalid JSON in DB", {
-          user,
-          year,
-          month,
-          dataJson,
+          user, year, month, dataJson
         });
-        context.res = ok(500, {
-          message: "Niepoprawny JSON w bazie danych",
-        });
+        context.res = ok(200, null); // ✅ NIE 500
       }
       return;
     }
@@ -109,20 +114,19 @@ module.exports = async function (context, req) {
       const month = String(body.month || "").padStart(2, "0");
       const data = body.data;
  
+      // ❗ BARDZO WAŻNE: data może być {} / []
       if (!user || !year || !month || data == null) {
-  context.res = ok(400, {
-    message: "Brak w body: user, year, month, data",
-  });
-  return;
-}
+        context.res = ok(400, {
+          message: "Brak w body: user, year, month, data",
+        });
+        return;
+      }
  
       let dataJson;
       try {
         dataJson = JSON.stringify(data);
-      } catch (e) {
-        context.res = ok(400, {
-          message: "Nie można zamienić data na JSON",
-        });
+      } catch {
+        context.res = ok(400, { message: "Niepoprawna struktura data" });
         return;
       }
  
@@ -158,13 +162,23 @@ module.exports = async function (context, req) {
       return;
     }
  
-    // =========================
-    // Inne metody
-    // =========================
     context.res = ok(405, { message: "Method not allowed" });
  
   } catch (err) {
-    context.log.error("API ERROR:", err);
+    context.log.error("API ERROR", err);
+ 
+    // ✅ Czytelna informacja przy SQL unavailable
+    if (
+      err.message &&
+      err.message.includes("Database") &&
+      err.message.includes("not currently available")
+    ) {
+      context.res = ok(503, {
+        message: "Baza danych chwilowo niedostępna – spróbuj ponownie",
+      });
+      return;
+    }
+ 
     context.res = ok(500, {
       message: "Błąd serwera",
       error: err.message,
@@ -172,3 +186,4 @@ module.exports = async function (context, req) {
   }
 };
 ``
+ 
